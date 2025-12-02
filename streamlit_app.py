@@ -10,7 +10,7 @@ st.set_page_config(layout="wide", page_title="Nina Tracker: Ciclos e Projeção"
 
 # **ATENÇÃO: SUBSTITUA ESTE LINK PELO SEU URL DE DOWNLOAD DIRETO DO GOOGLE DRIVE!**
 GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=1ELIud71WxGMp9PskAib_fqVwLOcQNhMV"
-N_DIAS_HISTORICO = 15
+N_DIAS_HISTORICO = 15 
 FUSO_HORARIO = 'America/Sao_Paulo' 
 
 # Nomes de categorias principais para a entrada manual
