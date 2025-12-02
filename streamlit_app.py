@@ -9,7 +9,7 @@ from datetime import datetime, time, timedelta
 st.set_page_config(layout="wide", page_title="Nina Tracker: Ciclos e Projeção")
 
 # **ATENÇÃO: SUBSTITUA ESTE LINK PELO SEU URL DE DOWNLOAD DIRETO DO GOOGLE DRIVE!**
-GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=SEU_ID_DO_ARQUIVO_CSV_AQUI"
+GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=1ELIud71WxGMp9PskAib_fqVwLOcQNhMV"
 N_DIAS_HISTORICO = 15
 FUSO_HORARIO = 'America/Sao_Paulo' 
 
