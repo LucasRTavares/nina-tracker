@@ -262,11 +262,18 @@ st.dataframe(
     use_container_width=True
 )
 
+# ... Continuação do código da Seção 5.2
+
 # 4. Gráfico de Timeline dos Dias Similares (Projeção)
 st.markdown("##### 📈 Timeline de Atividades dos Dias Similares (A partir de agora)")
 
-# Cria um tempo de início simulado para a linha de corte, para visualização
-current_time_display = pd.Timestamp(current_datetime_tz.date()).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=current_datetime_tz.hour, minutes=current_datetime_tz.minute)
+# Criamos o Timestamp do tempo atual (que é tz-aware)
+current_time_display_tz_aware = pd.Timestamp(current_datetime_tz.date()).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=current_datetime_tz.hour, minutes=current_datetime_tz.minute)
+
+# CONVERSÃO CRÍTICA: O Plotly lida melhor com strings ISO formatadas para linhas verticais.
+# O .isoformat() converte o Timestamp tz-aware em uma string, que o Plotly aceita.
+current_time_string = current_time_display_tz_aware.isoformat()
+
 
 fig_timeline = px.timeline(
     df_projection,
@@ -278,6 +285,12 @@ fig_timeline = px.timeline(
     labels={"cycle_date": "Dia Similar"},
     hover_name="activity_name"
 )
+
+# Use a string formatada para evitar o erro de soma do Plotly
+fig_timeline.add_vline(x=current_time_string, line_dash="dash", line_color="Red", annotation_text="Tempo Atual") 
+
+fig_timeline.update_yaxes(autorange="reversed") 
+st.plotly_chart(fig_timeline, use_container_width=True)
 
 # Adiciona uma linha vertical para o tempo de corte (tempo atual)
 fig_timeline.add_vline(x=current_time_display, line_dash="dash", line_color="Red", annotation_text="Tempo Atual")
