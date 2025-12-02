@@ -136,14 +136,15 @@ with col_input_1:
 
 # 4. Cálculo de Corte e Estrutura de Dados do Dia Atual
 
-# O ciclo de hoje começou às 6h da manhã.
-today_start_of_cycle = current_datetime_tz.normalize().tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=6)
+today_start_of_cycle = current_datetime_tz.normalize() + pd.Timedelta(hours=6) 
+# Aqui, today_start_of_cycle é 2025-12-02 06:00:00-03:00 (tz-aware)
 
 # Se for antes das 6h, o ciclo começou ontem.
 if current_datetime_tz.time() < time(6, 0):
     today_start_of_cycle -= pd.Timedelta(days=1)
 
 # Tempo total que se passou no ciclo (em minutos)
+# A subtração entre dois Timestamps tz-aware retorna um Timedelta, que é o esperado.
 time_passed_minutes = (current_datetime_tz - today_start_of_cycle) / np.timedelta64(1, 'm')
 
 with col_input_2:
