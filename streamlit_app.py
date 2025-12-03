@@ -138,11 +138,20 @@ st.plotly_chart(fig_daily_bar, use_container_width=True)
 
 st.divider()
 
-# --- 4.3 MAPA DE CALOR (Mantido) ---
+# --- 4.3 MAPA DE CALOR (Atualizado com escala Preto -> Verde) ---
 st.subheader("3. Padrão Horário")
 hourly_data = df_filtered.groupby(['hour', 'categories']).size().reset_index(name='contagem')
 all_hours = pd.DataFrame({'hour': range(24)})
 hourly_data = hourly_data.merge(all_hours, on='hour', how='outer').fillna(0)
+
+# Definindo a escala personalizada
+escala_matrix = [
+    "#050505", # 0% - Quase Preto (Fundo)
+    "#003300", # 25% - Verde Muito Escuro
+    "#006400", # 50% - Verde Escuro
+    "#00cc00", # 75% - Verde Vivo
+    "#99ff99"  # 100% - Verde Claro (Picos de atividade)
+]
 
 fig_heatmap = px.density_heatmap(
     df_filtered,
@@ -150,9 +159,15 @@ fig_heatmap = px.density_heatmap(
     y='categories',
     title="Heatmap: Concentração de Atividades por Hora",
     nbinsx=24,
-    color_continuous_scale='Viridis'
+    color_continuous_scale=escala_matrix # Aplicando a nova escala
 )
-fig_heatmap.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+
+fig_heatmap.update_layout(
+    xaxis=dict(tickmode='linear', dtick=1),
+    # Opcional: Deixar o fundo do gráfico escuro para combinar melhor
+    plot_bgcolor='#0e1117' 
+)
+
 st.plotly_chart(fig_heatmap, use_container_width=True)
 
 st.divider()
