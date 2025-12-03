@@ -1,293 +1,164 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import numpy as np
-from datetime import datetime, time, timedelta
+import plotly.graph_objects as go
 
-# --- 1. CONFIGURAÇÃO E CARREGAMENTO DE DADOS (6H às 6H) ---
+# --- 1. CONFIGURAÇÕES GERAIS ---
+st.set_page_config(layout="wide", page_title="Nina Tracker: Daily View")
 
-st.set_page_config(layout="wide", page_title="Nina Tracker: Ciclos e Projeção")
+# CONFIGURAÇÕES
+# Substitua pelo seu ID real
+ID_ARQUIVO = "1ELIud71WxGMp9PskAib_fqVwLOcQNhMV" 
+GOOGLE_DRIVE_URL = f"https://drive.google.com/uc?export=download&id={ID_ARQUIVO}"
+FUSO_HORARIO = 'America/Sao_Paulo'
+CATEGORIAS_PRINCIPAIS = ['Acordada', 'Mamou', 'Dormiu']
 
-# **ATENÇÃO: SUBSTITUA ESTE LINK PELO SEU URL DE DOWNLOAD DIRETO DO GOOGLE DRIVE!**
-GOOGLE_DRIVE_URL = "https://drive.google.com/uc?export=download&id=1ELIud71WxGMp9PskAib_fqVwLOcQNhMV"
-N_DIAS_HISTORICO = 15 
-FUSO_HORARIO = 'America/Sao_Paulo' 
-
-# Nomes de categorias principais para a entrada manual
-MAIN_CATEGORIES = ['Acordada', 'Mamou', 'Dormiu']
+# --- 2. CAMADA DE DADOS (ETL) ---
 
 @st.cache_data(ttl=3600)
-def load_and_preprocess_data():
-    """Carrega dados, limpa colunas e define o 'cycle_date' (6h às 6h)."""
-    
+def get_raw_data():
+    """Carrega o CSV bruto do Google Drive."""
     try:
         df = pd.read_csv(GOOGLE_DRIVE_URL)
+        return df
     except Exception as e:
-        st.error(f"Erro ao carregar os dados. Verifique a URL do Google Drive e as permissões. Erro: {e}")
+        st.error(f"Erro no download: {e}")
         return pd.DataFrame()
 
+def process_daily_data(df_raw):
+    """
+    Processa os dados especificamente para a visão DIÁRIA (00h - 23h59).
+    """
+    if df_raw.empty: return pd.DataFrame()
+    
+    df = df_raw.copy()
+    
+    # Normalização de Colunas
     df.columns = df.columns.str.lower().str.replace(' ', '_')
     
-    # Limpeza e Conversão de Tipos (usando o fuso horário para consistência)
-    df['time_started'] = pd.to_datetime(df['time_started']).dt.tz_localize(FUSO_HORARIO, nonexistent='NaT', ambiguous='NaT')
-    df['time_ended'] = pd.to_datetime(df['time_ended']).dt.tz_localize(FUSO_HORARIO, nonexistent='NaT', ambiguous='NaT')
+    # Tratamento de Tempo e Fuso Horário
+    for col in ['time_started', 'time_ended']:
+        df[col] = pd.to_datetime(df[col])
+        # Garante que seja tz-aware (converte se não for, ajusta se for)
+        df[col] = df[col].apply(lambda x: x.tz_localize(FUSO_HORARIO) if x.tzinfo is None else x.tz_convert(FUSO_HORARIO))
+
+    # Limpeza básica
     df['duration_minutes'] = pd.to_numeric(df['duration_minutes'], errors='coerce').fillna(0)
-    
-    # Filtra atividades onde 'categories' é NaN (se houver) e foca nas principais
     df = df.dropna(subset=['categories'])
     
-    # Definição do Ciclo Diário (6h AM a 6h AM do dia seguinte)
-    df['cycle_date'] = df['time_started'].dt.normalize().dt.tz_localize(None).dt.date
-    
-    # Se a hora de início (tz-naive) for menor que 6h, pertence ao ciclo do dia anterior.
-    is_early_morning = df['time_started'].dt.tz_convert(None).dt.hour < 6
-    
-    # Para atividades da madrugada, subtrair um dia da data do ciclo.
-    df.loc[is_early_morning, 'cycle_date'] = (pd.to_datetime(df.loc[is_early_morning, 'cycle_date']) - pd.Timedelta(days=1)).dt.date
-    
-    df['cycle_date'] = pd.to_datetime(df['cycle_date']).dt.date
+    # --- LÓGICA DIÁRIA (CALENDAR DAY) ---
+    # Para visão diária, consideramos a data de INÍCIO da atividade.
+    df['date'] = df['time_started'].dt.date
+    df['hour'] = df['time_started'].dt.hour
+    df['day_name'] = df['time_started'].dt.strftime('%A') # Nome do dia (segunda, terça...)
     
     return df
 
-# --- FUNÇÃO PARA PRÉ-PROCESSAMENTO (FIM) ---
+# --- 3. CARREGAMENTO ---
 
-df_raw = load_and_preprocess_data()
-
+df_raw = get_raw_data()
 if df_raw.empty:
     st.stop()
 
-# Define o ciclo mais recente do CSV (que é o ciclo que terminou hoje às 6h da manhã, ou seja, o ciclo de ontem).
-all_cycle_dates = sorted(df_raw['cycle_date'].unique())
-# O dia mais recente no CSV é o dia de "ontem" na perspectiva do ciclo.
-historical_cycles = all_cycle_dates[-N_DIAS_HISTORICO:] 
+# Cria o DataFrame específico para análise Diária
+df_daily = process_daily_data(df_raw)
 
-# Dataframe apenas com o histórico relevante
-df_history = df_raw[df_raw['cycle_date'].isin(historical_cycles)].copy()
+# Filtro de Data (Sidebar)
+st.sidebar.header("📅 Filtros Diários")
+min_date = df_daily['date'].min()
+max_date = df_daily['date'].max()
 
-# --- 2. DASHBOARD RESUMO (ÚLTIMOS 15 DIAS) ---
-
-st.title("👶 Nina Tracker: Análise e Projeção de Ciclos")
-st.subheader(f"Resumo Histórico ({N_DIAS_HISTORICO} Ciclos)")
-
-daily_totals_history = df_history.groupby(['cycle_date', 'categories'])['duration_minutes'].sum().reset_index()
-
-# 2.1 Média das Atividades
-avg_totals = daily_totals_history.groupby('categories')['duration_minutes'].mean().reset_index()
-avg_totals['duration_minutes_h'] = avg_totals['duration_minutes'] / 60
-avg_totals.columns = ['Categoria', 'Média (min)', 'Média (h)']
-
-st.markdown("##### Médias de Tempo por Categoria (por Ciclo)")
-st.dataframe(
-    avg_totals[avg_totals['Categoria'].isin(MAIN_CATEGORIES)].set_index('Categoria').sort_values('Média (h)', ascending=False),
-    column_config={"Média (h)": st.column_config.NumberColumn(format="%.1f h")},
-    use_container_width=True
+date_range = st.sidebar.date_input(
+    "Selecione o Período",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date
 )
 
-# 2.2 Gráfico 1: Timeline dos Últimos 15 Dias (Stacked Bar)
-st.markdown("##### 📈 Distribuição Diária das Atividades Principais")
+# Filtragem do DataFrame principal
+if len(date_range) == 2:
+    mask = (df_daily['date'] >= date_range[0]) & (df_daily['date'] <= date_range[1])
+    df_filtered = df_daily.loc[mask]
+else:
+    df_filtered = df_daily.copy()
 
-fig_stack = px.bar(
-    daily_totals_history[daily_totals_history['categories'].isin(MAIN_CATEGORIES)],
-    x='cycle_date',
+# --- 4. VISUALIZAÇÃO ---
+
+st.title(f"📊 Análise Diária (0h - 24h)")
+st.markdown("Visão focada no dia civil. Atividades agrupadas pela data de início.")
+
+# --- 4.1 MÉDIAS DIÁRIAS (Solicitado) ---
+st.subheader("1. Médias Diárias por Categoria")
+
+# Agrupa por Data e Categoria, depois tira a média
+daily_sum = df_filtered.groupby(['date', 'categories'])['duration_minutes'].sum().reset_index()
+daily_avg = daily_sum.groupby('categories')['duration_minutes'].mean().reset_index()
+daily_avg['duration_hours'] = daily_avg['duration_minutes'] / 60
+
+# Exibição em Colunas (Cards)
+cols = st.columns(len(CATEGORIAS_PRINCIPAIS))
+for i, cat in enumerate(CATEGORIAS_PRINCIPAIS):
+    if i < len(cols):
+        val_df = daily_avg[daily_avg['categories'] == cat]
+        if not val_df.empty:
+            minutes = val_df['duration_minutes'].values[0]
+            hours = val_df['duration_hours'].values[0]
+            cols[i].metric(f"Média {cat}/Dia", f"{hours:.1f}h", f"{minutes:.0f} min")
+
+st.divider()
+
+# --- 4.2 GRÁFICO POR DIA E CATEGORIA (Solicitado) ---
+st.subheader("2. Evolução Diária (Timeline)")
+
+fig_daily_bar = px.bar(
+    df_filtered,
+    x='date',
     y='duration_minutes',
     color='categories',
-    title='Distribuição de Tempo por Categoria (6h às 6h)',
-    labels={'cycle_date': 'Dia do Ciclo (Início às 6h)', 'duration_minutes': 'Duração (Minutos)', 'categories': 'Categoria'},
-    height=450
+    title="Tempo Total por Dia e Categoria",
+    labels={'date': 'Data', 'duration_minutes': 'Minutos Totais', 'categories': 'Categoria'},
+    barmode='stack'
 )
-fig_stack.update_layout(xaxis_tickangle=-45, legend_title="Atividade")
-st.plotly_chart(fig_stack, use_container_width=True)
+st.plotly_chart(fig_daily_bar, use_container_width=True)
 
-# 2.3 Gráfico 2: Minutos de Dormiu
-df_sleep = daily_totals_history[daily_totals_history['categories'] == 'Dormiu']
+st.divider()
 
-fig_sleep = px.line(
-    df_sleep,
-    x='cycle_date',
+# --- 4.3 NOVO: MAPA DE CALOR HORÁRIO (Sugestão 1) ---
+st.subheader("3. Padrão Horário (Concentração de Atividades)")
+st.markdown("Em qual hora do dia cada atividade acontece com mais frequência?")
+
+# Agrupa por Hora e Categoria
+hourly_data = df_filtered.groupby(['hour', 'categories']).size().reset_index(name='contagem')
+
+# Completa as horas vazias (0 a 23) para o gráfico não ficar buraco
+all_hours = pd.DataFrame({'hour': range(24)})
+hourly_data = hourly_data.merge(all_hours, on='hour', how='outer').fillna(0)
+
+fig_heatmap = px.density_heatmap(
+    df_filtered, # Usamos o DF original filtrado para densidade real
+    x='hour',
+    y='categories',
+    title="Heatmap: Frequência de Início de Atividades por Hora",
+    labels={'hour': 'Hora do Dia (0-23h)', 'categories': 'Categoria'},
+    color_continuous_scale='Viridis',
+    nbinsx=24
+)
+fig_heatmap.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+st.plotly_chart(fig_heatmap, use_container_width=True)
+
+st.divider()
+
+# --- 4.4 NOVO: BOXPLOT DE DURAÇÃO (Sugestão 2) ---
+st.subheader("4. Consistência e Duração (Boxplot)")
+st.markdown("Análise da variabilidade: As atividades são curtas e picadas ou longas e consistentes?")
+
+fig_box = px.box(
+    df_filtered,
+    x='categories',
     y='duration_minutes',
-    title='Tempo Total Dormindo por Ciclo',
-    labels={'cycle_date': 'Dia do Ciclo (Início às 6h)', 'duration_minutes': 'Minutos Dormidos'},
-    markers=True
+    color='categories',
+    points="all", # Mostra todos os pontos (outliers e normais)
+    title="Distribuição da Duração das Atividades (Minutos)",
+    labels={'categories': 'Categoria', 'duration_minutes': 'Duração da Sessão (min)'}
 )
-st.plotly_chart(fig_sleep, use_container_width=True)
-
-st.markdown("---")
-
-# --- 3. ENTRADA MANUAL DO DIA ATUAL PARA COMPARAÇÃO ---
-
-st.header("🎯 Status do Ciclo de HOJE (Entrada Manual)")
-current_datetime_tz = pd.Timestamp.now(tz=FUSO_HORARIO)
-
-col_input_1, col_input_2 = st.columns([1, 2])
-
-with col_input_1:
-    st.markdown(f"**Hora da Consulta:** `{current_datetime_tz.strftime('%H:%M:%S %Z')}`")
-    st.markdown("Preencha o tempo total acumulado em minutos **desde as 6h AM de hoje**.")
-    
-    # Inputs Manuais
-    manual_totals = {}
-    for cat in MAIN_CATEGORIES:
-        manual_totals[cat] = st.number_input(
-            f"Tempo total **{cat}** (minutos)", 
-            min_value=0, 
-            value=0, 
-            key=f"input_{cat}"
-        )
-
-# 4. Cálculo de Corte e Estrutura de Dados do Dia Atual
-
-today_start_of_cycle = current_datetime_tz.normalize() + pd.Timedelta(hours=6) 
-# Aqui, today_start_of_cycle é 2025-12-02 06:00:00-03:00 (tz-aware)
-
-# Se for antes das 6h, o ciclo começou ontem.
-if current_datetime_tz.time() < time(6, 0):
-    today_start_of_cycle -= pd.Timedelta(days=1)
-
-# Tempo total que se passou no ciclo (em minutos)
-# A subtração entre dois Timestamps tz-aware retorna um Timedelta, que é o esperado.
-time_passed_minutes = (current_datetime_tz - today_start_of_cycle) / np.timedelta64(1, 'm')
-
-with col_input_2:
-    st.metric(
-        "Tempo Decorrido do Ciclo", 
-        f"{time_passed_minutes:.0f} minutos", 
-        help="Tempo decorrido desde o início do ciclo (6h AM) até a hora atual da consulta."
-    )
-    
-# --- 5. ANÁLISE DE SIMILARIDADE E PROJEÇÃO ---
-
-st.header("🔍 Projeção e Dias Semelhantes")
-
-col_sim_1, col_sim_2 = st.columns(2)
-
-with col_sim_1:
-    similarity_category = st.selectbox(
-        "Categoria Chave para Comparação",
-        options=MAIN_CATEGORIES,
-        index=2 # Padrão: Dormiu
-    )
-with col_sim_2:
-    similarity_threshold = st.slider(
-        f"Tolerância ($\pm$ min. de {similarity_category})",
-        min_value=30,
-        max_value=120,
-        value=60, # 60 minutos = 1 hora
-        step=10
-    )
-
-# Valor do dia atual (manual) para a categoria chave
-today_key_value = manual_totals[similarity_category]
-
-# 5.1 Encontrando Dias Similares
-@st.cache_data
-def calculate_historical_value(df_hist, key_category, time_passed_minutes_cutoff):
-    """Calcula o total histórico da categoria chave até o ponto de corte do dia."""
-    
-    historical_data = []
-    
-    # Itera sobre cada dia histórico
-    for cycle_date, group in df_hist.groupby('cycle_date'):
-        cycle_start = pd.Timestamp(cycle_date).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=6)
-        # O ponto de corte é o início do ciclo + o tempo passado no ciclo de hoje
-        cutoff_time = cycle_start + pd.Timedelta(minutes=time_passed_minutes_cutoff)
-
-        # Filtra atividades históricas que terminaram antes do ponto de corte
-        df_filtered = group[group['time_ended'] < cutoff_time]
-        
-        # Soma a categoria chave para esse dia
-        total_value = df_filtered[df_filtered['categories'] == key_category]['duration_minutes'].sum()
-        
-        historical_data.append({
-            'cycle_date': cycle_date,
-            'key_category_total': total_value
-        })
-        
-    return pd.DataFrame(historical_data)
-
-# Obtém os totais históricos até o tempo de corte atual
-historical_key_totals_df = calculate_historical_value(df_history, similarity_category, time_passed_minutes)
-
-# Encontrar dias similares (com base na entrada manual)
-historical_key_totals_df['difference'] = abs(historical_key_totals_df['key_category_total'] - today_key_value)
-similar_days_df = historical_key_totals_df[historical_key_totals_df['difference'] <= similarity_threshold]
-
-similar_days = similar_days_df['cycle_date'].tolist()
-
-st.info(
-    f"O valor de **{similarity_category}** inserido é **{today_key_value:.0f} minutos** (até {current_datetime_tz.strftime('%H:%M')}). "
-    f"Encontrados **{len(similar_days)}** dias históricos similares (tolerância de $\pm {similarity_threshold}$ minutos)."
-)
-
-if not similar_days:
-    st.warning("Nenhum dia similar encontrado com os critérios atuais. Tente aumentar a tolerância.")
-    st.stop()
-    
-# Resumo dos dias similares
-st.dataframe(
-    similar_days_df[['cycle_date', 'key_category_total', 'difference']].sort_values('difference'), 
-    use_container_width=True
-)
-
-
-# 5.2 Projeção do Restante do Dia
-
-# 5.2 Projeção do Restante do Dia
-
-st.subheader("Projeção Baseada em Dias Similares (Restante do Ciclo)")
-
-# 1. Filtra os dados apenas dos dias similares
-df_similar_days = df_history[df_history['cycle_date'].isin(similar_days)].copy()
-
-# 2. Define o ponto de corte em cada dia similar
-df_projection_data = []
-
-for cycle_date, group in df_similar_days.groupby('cycle_date'):
-    cycle_start = pd.Timestamp(cycle_date).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=6)
-    cutoff_time = cycle_start + pd.Timedelta(minutes=time_passed_minutes)
-    
-    # Atividades que aconteceram DEPOIS do ponto de corte nesse dia similar
-    df_projection_data.append(group[group['time_started'] >= cutoff_time])
-
-df_projection = pd.concat(df_projection_data)
-
-
-if df_projection.empty:
-    st.warning("Não há atividades registradas DEPOIS do tempo de corte nos dias similares encontrados. A projeção da timeline não pode ser gerada.")
-    st.stop() # Pula o restante da seção, que inclui a falha na vline
-    
-    
-# 3. Calcula o total MÍNIMO, MÉDIO e MÁXIMO restante
-# ... (código existente para calcular projection_summary e projection_final) ...
-
-# 4. Gráfico de Timeline dos Dias Similares (Projeção)
-st.markdown("##### 📈 Timeline de Atividades dos Dias Similares (A partir de agora)")
-
-# Criamos o Timestamp do tempo atual (que é tz-aware)
-current_time_display_tz_aware = pd.Timestamp(current_datetime_tz.date()).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=current_datetime_tz.hour, minutes=current_datetime_tz.minute)
-
-# CONVERSÃO CRÍTICA: String formatada em ISO 8601
-current_time_string = current_time_display_tz_aware.isoformat()
-
-
-fig_timeline = px.timeline(
-    df_projection, # DataFrame que agora sabemos que não está vazio
-    x_start="time_started", 
-    x_end="time_ended", 
-    y="cycle_date", 
-    color="categories",
-    title="Atividades Restantes nos Dias Similares",
-    labels={"cycle_date": "Dia Similar"},
-    hover_name="activity_name"
-)
-
-# A vline agora será adicionada a um gráfico que possui eixos definidos.
-fig_timeline.add_vline(x=current_time_string, line_dash="dash", line_color="Red", annotation_text="Tempo Atual") 
-
-fig_timeline.update_yaxes(autorange="reversed") 
-st.plotly_chart(fig_timeline, use_container_width=True)
-
-# Adiciona uma linha vertical para o tempo de corte (tempo atual)
-fig_timeline.add_vline(x=current_time_display, line_dash="dash", line_color="Red", annotation_text="Tempo Atual")
-
-fig_timeline.update_yaxes(autorange="reversed") 
-st.plotly_chart(fig_timeline, use_container_width=True)
+st.plotly_chart(fig_box, use_container_width=True)
