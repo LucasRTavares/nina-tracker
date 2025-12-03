@@ -4,21 +4,19 @@ import plotly.express as px
 import datetime as dt
 
 # --- 1. CONFIGURAÇÕES GERAIS ---
-st.set_page_config(layout="wide", page_title="Nina Tracker: Daily View")
+st.set_page_config(layout="wide", page_title="Nina Tracker: Hourly Precision")
 
 # CONFIGURAÇÕES
-# Substitua pelo seu ID real
 ID_ARQUIVO = "1ELIud71WxGMp9PskAib_fqVwLOcQNhMV" 
 GOOGLE_DRIVE_URL = f"https://drive.google.com/uc?export=download&id={ID_ARQUIVO}"
 FUSO_HORARIO = 'America/Sao_Paulo'
 CATEGORIAS_PRINCIPAIS = ['Acordada', 'Mamou', 'Dormiu']
-DIAS_PADRAO_INICIAL = 15  # Começa mostrando os últimos 15 dias
+DIAS_PADRAO_INICIAL = 15
 
 # --- 2. CAMADA DE DADOS (ETL) ---
 
 @st.cache_data(ttl=3600)
 def get_raw_data():
-    """Carrega o CSV bruto do Google Drive."""
     try:
         df = pd.read_csv(GOOGLE_DRIVE_URL)
         return df
@@ -27,177 +25,187 @@ def get_raw_data():
         return pd.DataFrame()
 
 def process_daily_data(df_raw):
-    """
-    Processa os dados especificamente para a visão DIÁRIA (00h - 23h59).
-    Includes Matutino/Noturno logic based on start time.
-    """
+    """Limpeza básica e tipagem."""
     if df_raw.empty: return pd.DataFrame()
-    
     df = df_raw.copy()
-    
-    # Normalização de Colunas
     df.columns = df.columns.str.lower().str.replace(' ', '_')
     
-    # Tratamento de Tempo e Fuso Horário
     for col in ['time_started', 'time_ended']:
         df[col] = pd.to_datetime(df[col])
-        # Garante que seja tz-aware
         df[col] = df[col].apply(lambda x: x.tz_localize(FUSO_HORARIO) if x.tzinfo is None else x.tz_convert(FUSO_HORARIO))
 
-    # Limpeza básica
     df['duration_minutes'] = pd.to_numeric(df['duration_minutes'], errors='coerce').fillna(0)
     df = df.dropna(subset=['categories'])
     
-    # --- ENRIQUECIMENTO DE DADOS ---
+    # Enriquecimento Básico
     df['date'] = df['time_started'].dt.date
     df['hour'] = df['time_started'].dt.hour
-    df['day_name'] = df['time_started'].dt.strftime('%A')
     
-    # Lógica Matutino (6h-18h) vs Noturno (18h-6h)
-    # Nota: Para visão DIÁRIA civil, consideramos o horário que a atividade COMEÇOU.
-    # Se começou às 23h, é Noturno do dia X. Se começou às 01h, é Noturno do dia X+1 (madrugada).
     def definir_periodo(hora):
-        if 6 <= hora < 18:
-            return "Matutino (06h-18h)"
-        else:
-            return "Noturno (18h-06h)"
-            
+        return "Matutino (06h-18h)" if 6 <= hora < 18 else "Noturno (18h-06h)"
     df['periodo_dia'] = df['hour'].apply(definir_periodo)
     
     return df
 
-# --- 3. CARREGAMENTO E FILTROS ---
+@st.cache_data
+def expand_events_by_hour(df):
+    """
+    TRANSFORMAÇÃO CRÍTICA:
+    Quebra eventos que cruzam a hora em múltiplas linhas.
+    Ex: 17:50 até 18:10 vira:
+        - 17:50 até 18:00 (10 min) na hora 17
+        - 18:00 até 18:10 (10 min) na hora 18
+    """
+    new_rows = []
+    
+    for _, row in df.iterrows():
+        start = row['time_started']
+        end = row['time_ended']
+        cat = row['categories']
+        
+        # Arredonda o start para o início da próxima hora
+        # Ex: 17:50 -> proxima hora cheia é 18:00
+        next_hour = start.ceil('h')
+        
+        current_start = start
+        
+        # Enquanto o tempo de início atual for menor que o tempo final real
+        while current_start < end:
+            # O fim deste segmento é o menor valor entre: 
+            # (próxima hora cheia) OU (fim real do evento)
+            # Se next_hour for 18:00 e end for 18:10, segment_end será 18:00 (primeiro loop)
+            current_end_of_hour = pd.Timestamp(current_start).ceil('h')
+            # Correção para quando current_start já é hora cheia
+            if current_end_of_hour == current_start:
+                current_end_of_hour += pd.Timedelta(hours=1)
+                
+            segment_end = min(current_end_of_hour, end)
+            
+            # Calcula duração deste pedaço
+            duration = (segment_end - current_start).total_seconds() / 60
+            
+            if duration > 0:
+                new_rows.append({
+                    'date': current_start.date(),
+                    'hour': current_start.hour,
+                    'categories': cat,
+                    'duration_minutes': duration
+                })
+            
+            # Prepara para o próximo loop
+            current_start = segment_end
+            
+    return pd.DataFrame(new_rows)
+
+# --- 3. EXECUÇÃO ---
 
 df_raw = get_raw_data()
-if df_raw.empty:
-    st.stop()
+if df_raw.empty: st.stop()
 
-df_daily = process_daily_data(df_raw)
+# DataFrame 1: Eventos Originais (Para Timeline e Boxplot)
+df_events = process_daily_data(df_raw)
 
-# --- 3.1 Lógica do Filtro de Data (Últimos 15 dias Padrão) ---
-st.sidebar.header("📅 Filtros Diários")
+# Filtro de Data
+st.sidebar.header("📅 Filtros")
+min_date = df_events['date'].min()
+max_date = df_events['date'].max()
+default_start = max(min_date, max_date - dt.timedelta(days=DIAS_PADRAO_INICIAL))
 
-min_date = df_daily['date'].min()
-max_date = df_daily['date'].max()
+date_range = st.sidebar.date_input("Período", value=(default_start, max_date), min_value=min_date, max_value=max_date)
 
-# Calcula a data de início padrão (15 dias atrás a partir do último dado)
-default_start_date = max_date - dt.timedelta(days=DIAS_PADRAO_INICIAL)
-
-# Garante que a data padrão não seja anterior à primeira data do dataset
-if default_start_date < min_date:
-    default_start_date = min_date
-
-date_range = st.sidebar.date_input(
-    "Selecione o Período",
-    value=(default_start_date, max_date), # O valor inicial agora é dinâmico
-    min_value=min_date,
-    max_value=max_date
-)
-
-# Filtragem do DataFrame
 if isinstance(date_range, tuple) and len(date_range) == 2:
-    mask = (df_daily['date'] >= date_range[0]) & (df_daily['date'] <= date_range[1])
-    df_filtered = df_daily.loc[mask]
+    # Filtra Eventos Originais
+    mask_events = (df_events['date'] >= date_range[0]) & (df_events['date'] <= date_range[1])
+    df_filtered_events = df_events.loc[mask_events]
+    
+    # GERA DATAFRAME 2: Expandido (Para Heatmap)
+    # Processamos apenas o período filtrado para ganhar performance
+    df_hourly_split = expand_events_by_hour(df_filtered_events)
 else:
-    df_filtered = df_daily.copy()
-    st.sidebar.warning("Selecione uma data final.")
+    st.stop()
 
 # --- 4. VISUALIZAÇÃO ---
 
-st.title(f"📊 Análise Diária (0h - 24h)")
+st.title("📊 Análise Diária de Precisão")
 
-# --- 4.1 MÉDIAS DIÁRIAS (Mantido) ---
-st.subheader("1. Médias Diárias por Categoria")
-
-daily_sum = df_filtered.groupby(['date', 'categories'])['duration_minutes'].sum().reset_index()
-daily_avg = daily_sum.groupby('categories')['duration_minutes'].mean().reset_index()
-daily_avg['duration_hours'] = daily_avg['duration_minutes'] / 60
+# 4.1 MÉDIAS (Usando dados originais ou split dá na mesma para soma diária)
+st.subheader("1. Médias Diárias")
+daily_totals = df_filtered_events.groupby(['date', 'categories'])['duration_minutes'].sum().reset_index()
+avg_metrics = daily_totals.groupby('categories')['duration_minutes'].mean().reset_index()
 
 cols = st.columns(len(CATEGORIAS_PRINCIPAIS))
 for i, cat in enumerate(CATEGORIAS_PRINCIPAIS):
     if i < len(cols):
-        val_df = daily_avg[daily_avg['categories'] == cat]
-        if not val_df.empty:
-            minutes = val_df['duration_minutes'].values[0]
-            hours = val_df['duration_hours'].values[0]
-            cols[i].metric(f"Média {cat}/Dia", f"{hours:.1f}h", f"{minutes:.0f} min")
+        row = avg_metrics[avg_metrics['categories'] == cat]
+        val = row['duration_minutes'].values[0] if not row.empty else 0
+        cols[i].metric(f"Média {cat}", f"{val/60:.1f}h", f"{val:.0f} min")
 
 st.divider()
 
-# --- 4.2 GRÁFICO DE BARRAS (Mantido) ---
-st.subheader("2. Evolução Diária (Timeline)")
-fig_daily_bar = px.bar(
-    df_filtered,
-    x='date',
-    y='duration_minutes',
-    color='categories',
-    title="Tempo Total por Dia e Categoria",
-    barmode='stack'
+# 4.2 TIMELINE (Original Events - Visualmente melhor ver o bloco inteiro)
+st.subheader("2. Timeline de Eventos")
+fig_timeline = px.bar(
+    df_filtered_events,
+    x='date', y='duration_minutes', color='categories',
+    title="Volume Total por Dia", barmode='stack'
 )
-st.plotly_chart(fig_daily_bar, use_container_width=True)
+st.plotly_chart(fig_timeline, use_container_width=True)
 
 st.divider()
 
-# --- 4.3 MAPA DE CALOR (Atualizado com escala Preto -> Verde) ---
-st.subheader("3. Padrão Horário")
-hourly_data = df_filtered.groupby(['hour', 'categories']).size().reset_index(name='contagem')
-all_hours = pd.DataFrame({'hour': range(24)})
-hourly_data = hourly_data.merge(all_hours, on='hour', how='outer').fillna(0)
+# 4.3 HEATMAP DE PRECISÃO (Usando Tabela Paralela 'df_hourly_split')
+st.subheader("3. Padrão Horário Real (Minutos/Hora)")
+st.markdown("Soma exata de minutos gastos em cada hora do dia.")
 
-# Definindo a escala personalizada
-escala_matrix = [
-    "#050505", # 0% - Quase Preto (Fundo)
-    "#003300", # 25% - Verde Muito Escuro
-    "#006400", # 50% - Verde Escuro
-    "#00cc00", # 75% - Verde Vivo
-    "#99ff99"  # 100% - Verde Claro (Picos de atividade)
-]
+if not df_hourly_split.empty:
+    # Agrupa por Hora e Categoria somando MINUTOS (não contagem)
+    heatmap_data = df_hourly_split.groupby(['hour', 'categories'])['duration_minutes'].sum().reset_index()
+    
+    # Normaliza pelo número de dias selecionados para mostrar "Média de Minutos por Hora"
+    # Se preferir ver o total absoluto acumulado no período, remova a divisão abaixo.
+    n_days = (date_range[1] - date_range[0]).days + 1
+    heatmap_data['minutes_per_hour_avg'] = heatmap_data['duration_minutes'] / n_days
+    
+    # Preenche horas vazias
+    all_hours = pd.DataFrame({'hour': range(24)})
+    heatmap_data = heatmap_data.merge(all_hours, on='hour', how='outer').fillna(0)
+    
+    escala_matrix = ["#050505", "#003300", "#006400", "#00cc00", "#99ff99"]
 
-fig_heatmap = px.density_heatmap(
-    df_filtered,
-    x='hour',
-    y='categories',
-    title="Heatmap: Concentração de Atividades por Hora",
-    nbinsx=24,
-    color_continuous_scale=escala_matrix # Aplicando a nova escala
-)
-
-fig_heatmap.update_layout(
-    xaxis=dict(tickmode='linear', dtick=1),
-    # Opcional: Deixar o fundo do gráfico escuro para combinar melhor
-    plot_bgcolor='#0e1117' 
-)
-
-st.plotly_chart(fig_heatmap, use_container_width=True)
+    fig_heatmap = px.density_heatmap(
+        heatmap_data,
+        x='hour',
+        y='categories',
+        z='minutes_per_hour_avg', # Eixo Z agora é a média de minutos
+        title=f"Intensidade Média (Minutos dentro da hora) - Base: {n_days} dias",
+        nbinsx=24,
+        color_continuous_scale=escala_matrix,
+        histfunc='sum' # Garante que o Plotly some os valores de Z
+    )
+    
+    fig_heatmap.update_layout(
+        xaxis=dict(tickmode='linear', dtick=1, title="Hora do Dia"),
+        yaxis=dict(title="Categoria"),
+        coloraxis_colorbar=dict(title="Média Min/Hora"),
+        plot_bgcolor='#0e1117'
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+else:
+    st.info("Sem dados suficientes para o Heatmap neste período.")
 
 st.divider()
 
-# --- 4.4 BOXPLOT (Atualizado: Dia vs Noite) ---
+# 4.4 BOXPLOT (Usa Eventos Originais - Queremos consistência da 'tirada' de sono)
 st.subheader("4. Consistência: Matutino vs Noturno")
-st.markdown("""
-Esta visualização compara a **dispersão da duração** das atividades entre o dia (06h-18h) e a noite (18h-06h).
-* **Caixa pequena:** Duração consistente (previsível).
-* **Caixa grande:** Duração muito variável (imprevisível).
-""")
+st.markdown("Analisa a duração de **cada evento individualmente**. (Dados não fragmentados)")
 
-# Definindo cores manuais para facilitar a leitura (Dia = Amarelo/Laranja, Noite = Azul Escuro)
-color_map = {
-    "Matutino (06h-18h)": "#FFA500", # Laranja
-    "Noturno (18h-06h)": "#191970"   # Azul Meia-noite
-}
+color_map = {"Matutino (06h-18h)": "#FFA500", "Noturno (18h-06h)": "#191970"}
 
 fig_box = px.box(
-    df_filtered,
-    x='categories',
-    y='duration_minutes',
-    color='periodo_dia', # A mágica acontece aqui: segmenta cada categoria em 2 caixas
-    color_discrete_map=color_map,
-    points="all",
-    title="Distribuição da Duração: Dia vs Noite",
-    labels={'categories': 'Categoria', 'duration_minutes': 'Duração (min)', 'periodo_dia': 'Período'}
+    df_filtered_events,
+    x='categories', y='duration_minutes', color='periodo_dia',
+    color_discrete_map=color_map, points="all",
+    title="Duração dos Eventos (Consistência)"
 )
-
-# Ajuste fino visual
-fig_box.update_layout(boxmode='group') # Garante que fiquem lado a lado
-
+fig_box.update_layout(boxmode='group')
 st.plotly_chart(fig_box, use_container_width=True)
