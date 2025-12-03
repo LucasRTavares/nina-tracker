@@ -231,13 +231,14 @@ st.dataframe(
 
 # 5.2 Projeção do Restante do Dia
 
+# 5.2 Projeção do Restante do Dia
+
 st.subheader("Projeção Baseada em Dias Similares (Restante do Ciclo)")
 
 # 1. Filtra os dados apenas dos dias similares
 df_similar_days = df_history[df_history['cycle_date'].isin(similar_days)].copy()
 
 # 2. Define o ponto de corte em cada dia similar
-# O ponto de corte é o tempo decorrido no ciclo de hoje (time_passed_minutes)
 df_projection_data = []
 
 for cycle_date, group in df_similar_days.groupby('cycle_date'):
@@ -250,19 +251,13 @@ for cycle_date, group in df_similar_days.groupby('cycle_date'):
 df_projection = pd.concat(df_projection_data)
 
 
+if df_projection.empty:
+    st.warning("Não há atividades registradas DEPOIS do tempo de corte nos dias similares encontrados. A projeção da timeline não pode ser gerada.")
+    st.stop() # Pula o restante da seção, que inclui a falha na vline
+    
+    
 # 3. Calcula o total MÍNIMO, MÉDIO e MÁXIMO restante
-projection_summary = df_projection.groupby(['cycle_date', 'categories'])['duration_minutes'].sum().reset_index()
-
-projection_final = projection_summary.groupby('categories')['duration_minutes'].agg(['min', 'mean', 'max']).reset_index()
-projection_final.columns = ['Categoria', 'Min. Restante (min)', 'Média Restante (min)', 'Max. Restante (min)']
-
-st.markdown("##### ⏳ Tempo Total de Atividade Projetado (Restante do Ciclo)")
-st.dataframe(
-    projection_final[projection_final['Categoria'].isin(MAIN_CATEGORIES)].set_index('Categoria').astype(int), 
-    use_container_width=True
-)
-
-# ... Continuação do código da Seção 5.2
+# ... (código existente para calcular projection_summary e projection_final) ...
 
 # 4. Gráfico de Timeline dos Dias Similares (Projeção)
 st.markdown("##### 📈 Timeline de Atividades dos Dias Similares (A partir de agora)")
@@ -270,13 +265,12 @@ st.markdown("##### 📈 Timeline de Atividades dos Dias Similares (A partir de a
 # Criamos o Timestamp do tempo atual (que é tz-aware)
 current_time_display_tz_aware = pd.Timestamp(current_datetime_tz.date()).tz_localize(FUSO_HORARIO) + pd.Timedelta(hours=current_datetime_tz.hour, minutes=current_datetime_tz.minute)
 
-# CONVERSÃO CRÍTICA: O Plotly lida melhor com strings ISO formatadas para linhas verticais.
-# O .isoformat() converte o Timestamp tz-aware em uma string, que o Plotly aceita.
+# CONVERSÃO CRÍTICA: String formatada em ISO 8601
 current_time_string = current_time_display_tz_aware.isoformat()
 
 
 fig_timeline = px.timeline(
-    df_projection,
+    df_projection, # DataFrame que agora sabemos que não está vazio
     x_start="time_started", 
     x_end="time_ended", 
     y="cycle_date", 
@@ -286,7 +280,7 @@ fig_timeline = px.timeline(
     hover_name="activity_name"
 )
 
-# Use a string formatada para evitar o erro de soma do Plotly
+# A vline agora será adicionada a um gráfico que possui eixos definidos.
 fig_timeline.add_vline(x=current_time_string, line_dash="dash", line_color="Red", annotation_text="Tempo Atual") 
 
 fig_timeline.update_yaxes(autorange="reversed") 
